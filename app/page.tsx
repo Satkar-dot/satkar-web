@@ -65,6 +65,7 @@ export default function SatkarHome() {
   const [selectedCategory, setSelectedCategory] = useState<"All" | "Electronics" | "Fashion" | "Home & Kitchen" | "Industrial & Tools">("All");
   const [activeTab, setActiveTab] = useState<"store" | "cart" | "seller" | "orders" | "auth">("store");
   const [loading, setLoading] = useState(true);
+  const [productsError, setProductsError] = useState("");
 
   const [user, setUser] = useState<UserData | null>(null);
 
@@ -99,12 +100,41 @@ export default function SatkarHome() {
   const imageInputRef = useRef<HTMLInputElement>(null);
 
   const fetchProducts = async () => {
+    setLoading(true);
+    setProductsError("");
     try {
-      const res = await fetch("https://satkar-api.onrender.com/api/products");
-      const data = await res.json();
-      setProducts(Array.isArray(data) ? data : []);
+      let lastError: Error | null = null;
+      for (let attempt = 0; attempt <= 3; attempt += 1) {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15000);
+        try {
+          const res = await fetch("https://satkar-api.onrender.com/api/products", {
+            signal: controller.signal,
+          });
+          if (!res.ok) {
+            throw new Error(`Products request failed (${res.status}).`);
+          }
+          const data = await res.json();
+          if (!Array.isArray(data)) {
+            throw new Error("The products service returned an invalid response.");
+          }
+          setProducts(data);
+          return;
+        } catch (error) {
+          clearTimeout(timeout);
+          lastError = error instanceof Error ? error : new Error("Unable to load products.");
+          if (attempt === 3) break;
+          await new Promise((resolve) => setTimeout(resolve, 5000));
+        } finally {
+          clearTimeout(timeout);
+        }
+      }
+      throw lastError || new Error("Unable to load products.");
     } catch (error) {
       console.error("Error fetching products:", error);
+      setProductsError(
+        error instanceof Error ? error.message : "Unable to load products.",
+      );
     } finally {
       setLoading(false);
     }
@@ -311,9 +341,11 @@ export default function SatkarHome() {
       const rzpData = await orderRes.json();
 
       if (!orderRes.ok) {
-        return alert(
-          "Razorpay Test Key abhi demo par hai. Asli Razorpay Test Key (.env mein) dalne par UPI/Card popup khulega!"
-        );
+        return alert(rzpData.message || "Online payment order create nahi ho saka.");
+      }
+
+      if (!rzpData.keyId || !rzpData.orderId || !rzpData.amount || !rzpData.currency) {
+        return alert("Payment service se valid checkout details nahi mili.");
       }
 
       const options = {
@@ -323,6 +355,24 @@ export default function SatkarHome() {
         name: "SATKAR Marketplace",
         description: "Order Payment",
         order_id: rzpData.orderId,
+        method: {
+          upi: true,
+          card: true,
+          netbanking: true,
+          wallet: true,
+        },
+        config: {
+          display: {
+            blocks: {
+              upi: {
+                name: "Pay via UPI (GPay, PhonePe, Paytm, BHIM and UPI QR)",
+                instruments: [{ method: "upi" }],
+              },
+            },
+            sequence: ["block.upi", "block.card", "block.netbanking", "block.wallet"],
+            preferences: { show_default_blocks: true },
+          },
+        },
         handler: async function (response: Record<string, unknown>) {
           const verifyRes = await fetch("https://satkar-api.onrender.com/api/payment/verify", {
             method: "POST",
@@ -534,7 +584,22 @@ export default function SatkarHome() {
 
             <h2 className="text-2xl font-bold mb-4">Trending Products</h2>
             {loading ? (
-              <p className="text-center py-10 text-gray-500">Products load ho rahe hain...</p>
+              <p className="text-center py-10 text-gray-500">
+                Server wake up ho raha hai, products load ho rahe hain... (30-40 sec)
+              </p>
+            ) : productsError && products.length === 0 ? (
+              <div className="text-center py-10">
+                <p className="text-gray-500 mb-4">
+                  Products load nahi ho paaye. {productsError}
+                </p>
+                <button
+                  type="button"
+                  onClick={() => void fetchProducts()}
+                  className="px-5 py-2 rounded-lg bg-blue-600 text-white font-semibold hover:bg-blue-700"
+                >
+                  Retry
+                </button>
+              </div>
             ) : filteredProducts.length === 0 ? (
               <p className="text-center py-10 text-gray-500">Koi product nahi mila.</p>
             ) : (
@@ -865,7 +930,7 @@ export default function SatkarHome() {
                           : "bg-white text-gray-600"
                       }`}
                     >
-                      Pay Online (UPI / Card)
+                      Pay Online (PhonePe, GPay, Paytm, UPI & Card)
                     </button>
                   </div>
 
